@@ -1277,8 +1277,26 @@ def convert_to_images(pdf_document, image_format="PNG"):
         mat = fitz.Matrix(2, 2)  # 2x scale
         pix = page.get_pixmap(matrix=mat)
         img_data = pix.tobytes(image_format.lower())
-        images.append((f"page_{page_num + 1}.{image_format.lower()}", img_data))
+    images.append((f"page_{page_num + 1}.{image_format.lower()}", img_data))
     return images
+
+def extract_tables_from_pdf(pdf_bytes):
+    """Extract tables from a PDF byte string using pdfplumber"""
+    tables = []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page_num, page in enumerate(pdf.pages, start=1):
+            page_tables = page.extract_tables()
+            for idx, table in enumerate(page_tables, start=1):
+                try:
+                    df = pd.DataFrame(table)
+                except Exception:
+                    df = pd.DataFrame()
+                tables.append({
+                    'page': page_num,
+                    'index': idx,
+                    'df': df
+                })
+    return tables
 
 def search_in_document(text, query):
     """Search for query in document text"""
@@ -1337,19 +1355,23 @@ with st.sidebar:
     st.markdown("### 🎯 Navigation")
     selected = option_menu(
         menu_title=None,
-        options=["Upload", "View", "Search", "Analytics", "OCR", "Convert", "Compress", "Export"],
-        icons=["cloud-upload", "eye", "search", "graph-up", "cpu", "arrow-repeat", "file-zip", "download"],
+        options=["Upload", "View", "Search", "Tables", "Analytics", "OCR", "Convert", "Compress", "Export"],
+        icons=["cloud-upload", "eye", "search", "table", "graph-up", "cpu", "arrow-repeat", "file-zip", "download"],
         menu_icon="cast",
         default_index=0,
         styles={
-            "container": {"padding": "0!important", "background-color": "#f8f9fa" if not st.session_state.dark_mode else "#2d3748"},
+            "container": {
+                "padding": "0!important",
+                "background-color": "#f8f9fa" if not st.session_state.dark_mode else "#2d3748"
+            },
             "icon": {"color": "#667eea", "font-size": "20px"},
             "nav-link": {
                 "font-size": "16px",
                 "text-align": "left",
                 "margin": "0px",
                 "padding": "10px",
-                "border-radius": "10px"
+                "border-radius": "10px",
+                "color": "#000000" if not st.session_state.dark_mode else "#ffffff"
             },
             "nav-link-selected": {
                 "background-color": "#667eea",
@@ -1610,6 +1632,59 @@ elif selected == "Search":
     
     else:
         st.info("📤 Please upload a document first to search in it.")
+
+elif selected == "Tables":
+    if st.session_state.doc_data and st.session_state.uploaded_file_data:
+        st.markdown("### 📊 Table Extraction")
+        page_num = st.number_input(
+            "Page to scan",
+            min_value=1,
+            max_value=st.session_state.doc_data.page_count,
+            value=1,
+            step=1,
+        )
+        if st.button("Extract Tables from Page", use_container_width=True):
+            with st.spinner("Extracting tables..."):
+                with pdfplumber.open(io.BytesIO(st.session_state.uploaded_file_data)) as pdf:
+                    page = pdf.pages[page_num - 1]
+                    tables = page.extract_tables()
+                    if tables:
+                        for idx, table in enumerate(tables, start=1):
+                            df = pd.DataFrame(table)
+                            st.markdown(f"#### Table {idx} (Page {page_num})")
+                            st.dataframe(df)
+                            csv = df.to_csv(index=False).encode("utf-8")
+                            st.download_button(
+                                label=f"Download Table {idx} as CSV",
+                                data=csv,
+                                file_name=f"table_page{page_num}_{idx}.csv",
+                                mime="text/csv",
+                            )
+                    else:
+                        st.info("No tables found on this page.")
+
+        if st.button("Extract Tables From All Pages", use_container_width=True):
+            with st.spinner("Scanning all pages..."):
+                tables = extract_tables_from_pdf(st.session_state.uploaded_file_data)
+                if tables:
+                    zip_buffer = io.BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+                        for t in tables:
+                            csv = t["df"].to_csv(index=False)
+                            zip_file.writestr(f"table_p{t['page']}_{t['index']}.csv", csv)
+                    st.download_button(
+                        label=f"📥 Download {len(tables)} Tables as ZIP",
+                        data=zip_buffer.getvalue(),
+                        file_name="tables.zip",
+                        mime="application/zip",
+                    )
+                    for t in tables:
+                        st.markdown(f"#### Page {t['page']} - Table {t['index']}")
+                        st.dataframe(t["df"])
+                else:
+                    st.info("No tables found in the document.")
+    else:
+        st.info("📤 Please upload a PDF document to extract tables.")
 
 elif selected == "OCR":
     if not st.session_state.tesseract_available:
